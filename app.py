@@ -154,10 +154,11 @@ _last_saved_exchange_id = None
 
 async def exchange_handler(request):
     """Returns the current exchange: agent's response waiting for user reply."""
-    global _last_saved_exchange_id
+    global _last_saved_exchange_id, _agent_processing
     efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
     if os.path.exists(efile) and not os.path.exists(rfile):
+        _agent_processing = False
         with open(efile) as f:
             data = json.load(f)
         if data.get("id") != _last_saved_exchange_id:
@@ -170,6 +171,7 @@ async def exchange_handler(request):
 
 async def reply_handler(request):
     """User sends their reply to the agent."""
+    global _agent_processing
     data = await request.json()
     os.makedirs(MCP_QUESTION_DIR, exist_ok=True)
     msg = data.get("message", "")
@@ -179,6 +181,7 @@ async def reply_handler(request):
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
     with open(rfile, "w") as f:
         json.dump(data, f)
+    _agent_processing = True
     return web.json_response({"ok": True})
 
 
@@ -207,6 +210,7 @@ async def kickstart_handler(request):
             capture_output=True,
         )
 
+    global _agent_processing
     append_message("user", message)
     clean_msg = message.replace("\n", " ")
     tmux_send_text(clean_msg)
@@ -215,14 +219,8 @@ async def kickstart_handler(request):
     tmux_send_key("Escape")
     await asyncio.sleep(0.3)
     tmux_send_key("Enter")
-    await asyncio.sleep(3)
 
-    for _ in range(90):
-        if os.path.exists(efile):
-            break
-        tmux_send_key("Tab")
-        await asyncio.sleep(2)
-
+    _agent_processing = True
     return web.json_response({"ok": True})
 
 
@@ -240,7 +238,44 @@ async def restart_handler(request):
     return web.json_response({"ok": True})
 
 
+_agent_processing = False
+
+
+def _tmux_tab():
+    subprocess.run(
+        ["tmux", "send-keys", "-t", "agent", "Tab"],
+        timeout=5,
+        capture_output=True,
+    )
+
+
+async def tab_presser_loop(app):
+    """Background task: press Tab when agent is processing (needs tool approvals)."""
+    efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
+    while True:
+        await asyncio.sleep(2)
+        if _agent_processing and not os.path.exists(efile):
+            try:
+                _tmux_tab()
+            except Exception:
+                pass
+
+
+async def start_background_tasks(app):
+    app["tab_presser"] = asyncio.create_task(tab_presser_loop(app))
+
+
+async def cleanup_background_tasks(app):
+    app["tab_presser"].cancel()
+    try:
+        await app["tab_presser"]
+    except asyncio.CancelledError:
+        pass
+
+
 app = web.Application(middlewares=[auth_middleware])
+app.on_startup.append(start_background_tasks)
+app.on_cleanup.append(cleanup_background_tasks)
 app.router.add_get(f"{BASE_PATH}", index_handler)
 app.router.add_get(f"{BASE_PATH}/", index_handler)
 app.router.add_get(f"{BASE_PATH}/ws", ws_handler)
