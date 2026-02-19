@@ -724,7 +724,7 @@
 
   async function poll() {
     try {
-      const r = await fetch(`${basePath}/api/exchange`, { credentials: 'same-origin' });
+      const r = await fetch(`${basePath}/api/exchange?_=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
       if (r.ok) {
         const d = await r.json();
         if (d && d.id && d.id !== curId && !sent) {
@@ -741,7 +741,9 @@
 
   async function loadHistory() {
     try {
-      const r = await fetch(`${basePath}/api/history`, { credentials: 'same-origin' });
+      const r = await fetch(`${basePath}/api/history?_=${Date.now()}`, {
+        credentials: 'same-origin', cache: 'no-store',
+      });
       console.log('[history] fetch status:', r.status);
       if (r.ok) {
         const msgs = await r.json();
@@ -753,7 +755,9 @@
           }
         }
       }
-      const ex = await fetch(`${basePath}/api/exchange`, { credentials: 'same-origin' });
+      const ex = await fetch(`${basePath}/api/exchange?_=${Date.now()}`, {
+        credentials: 'same-origin', cache: 'no-store',
+      });
       if (ex.ok) {
         const d = await ex.json();
         console.log('[history] exchange:', d?.id || 'none');
