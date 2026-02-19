@@ -592,6 +592,21 @@
 
   // 't' shortcut
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (e.target === chatInput || e.target === cmdInput)) {
+      e.preventDefault();
+      e.target.blur();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === '1') {
+      e.preventDefault();
+      toChat();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === '2') {
+      e.preventDefault();
+      toTerm();
+      return;
+    }
     if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.isContentEditable) return;
     if (e.key === 't' && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
