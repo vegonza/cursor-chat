@@ -742,8 +742,10 @@
   async function loadHistory() {
     try {
       const r = await fetch(`${basePath}/api/history`, { credentials: 'same-origin' });
+      console.log('[history] fetch status:', r.status);
       if (r.ok) {
         const msgs = await r.json();
+        console.log('[history] messages:', msgs?.length || 0);
         if (msgs && msgs.length > 0) {
           conversationStarted = true;
           for (const m of msgs) {
@@ -754,13 +756,14 @@
       const ex = await fetch(`${basePath}/api/exchange`, { credentials: 'same-origin' });
       if (ex.ok) {
         const d = await ex.json();
+        console.log('[history] exchange:', d?.id || 'none');
         if (d && d.id) {
           curId = d.id;
           sent = false;
           enable();
         }
       }
-    } catch (_) {}
+    } catch (e) { console.error('[history] error:', e); }
   }
 
   // Command palette

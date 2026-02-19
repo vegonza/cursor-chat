@@ -43,7 +43,11 @@ async def auth_middleware(request, handler):
 
 
 async def index_handler(request):
-    return web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    resp = web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 async def ws_handler(request):
