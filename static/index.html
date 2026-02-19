@@ -751,6 +751,15 @@
           }
         }
       }
+      const ex = await fetch(`${basePath}/api/exchange`, { credentials: 'same-origin' });
+      if (ex.ok) {
+        const d = await ex.json();
+        if (d && d.id) {
+          curId = d.id;
+          sent = false;
+          enable();
+        }
+      }
     } catch (_) {}
   }
 
