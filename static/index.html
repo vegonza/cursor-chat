@@ -363,6 +363,48 @@
   }
 
   /* ---- Empty state ---- */
+  /* ---- Command palette ---- */
+  #cmd-palette-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px);
+    align-items: flex-start; justify-content: center;
+    padding-top: 20vh;
+  }
+  #cmd-palette-overlay.open { display: flex; }
+
+  #cmd-palette {
+    width: 460px; background: var(--gray-3);
+    border: 1px solid var(--gray-6); border-radius: var(--radius-lg);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+    overflow: hidden;
+  }
+  #cmd-palette-input-wrap {
+    padding: 12px 14px; border-bottom: 1px solid var(--gray-a4);
+    display: flex; align-items: center; gap: 8px;
+  }
+  #cmd-palette-input-wrap svg { width: 16px; height: 16px; color: var(--text-weak); flex-shrink: 0; }
+  #cmd-palette-input {
+    flex: 1; background: none; border: none; outline: none;
+    font-family: var(--font-sans); font-size: var(--font-size-base);
+    color: var(--text-strong); line-height: 150%;
+  }
+  #cmd-palette-input::placeholder { color: var(--text-weaker); }
+
+  #cmd-palette-list { padding: 4px; }
+  .cmd-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: var(--radius-md);
+    cursor: pointer; transition: background 0.1s;
+    font-size: var(--font-size-base); color: var(--text-base);
+  }
+  .cmd-item:hover, .cmd-item.selected { background: var(--gray-a4); }
+  .cmd-item svg { width: 16px; height: 16px; color: var(--text-weak); flex-shrink: 0; }
+  .cmd-item .cmd-label { flex: 1; }
+  .cmd-item .cmd-shortcut {
+    font-size: 11px; color: var(--text-weaker);
+    display: flex; gap: 3px;
+  }
+
   .empty {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 100px 24px; text-align: center; gap: 8px;
@@ -422,6 +464,21 @@
       <div id="reconnect-overlay">
         <div class="rspinner"></div>
         <span style="color:var(--text-weak);font-size:var(--font-size-small);">Reconnecting...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="cmd-palette-overlay">
+  <div id="cmd-palette">
+    <div id="cmd-palette-input-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="cmd-palette-input" placeholder="Type a command..." autocomplete="off" spellcheck="false">
+    </div>
+    <div id="cmd-palette-list">
+      <div class="cmd-item selected" data-cmd="restart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M21 21v-5h-5"/></svg>
+        <span class="cmd-label">New Chat (Restart)</span>
       </div>
     </div>
   </div>
@@ -696,6 +753,80 @@
       }
     } catch (_) {}
   }
+
+  // Command palette
+  const cmdOverlay = document.getElementById('cmd-palette-overlay');
+  const cmdInput = document.getElementById('cmd-palette-input');
+  const cmdList = document.getElementById('cmd-palette-list');
+
+  function openPalette() {
+    cmdOverlay.classList.add('open');
+    cmdInput.value = '';
+    cmdInput.focus();
+    filterCmds('');
+  }
+
+  function closePalette() {
+    cmdOverlay.classList.remove('open');
+  }
+
+  function filterCmds(q) {
+    const items = cmdList.querySelectorAll('.cmd-item');
+    let first = true;
+    items.forEach(el => {
+      const match = !q || el.dataset.cmd.includes(q.toLowerCase()) ||
+        el.querySelector('.cmd-label').textContent.toLowerCase().includes(q.toLowerCase());
+      el.style.display = match ? '' : 'none';
+      el.classList.toggle('selected', match && first);
+      if (match) first = false;
+    });
+  }
+
+  async function execCmd(cmd) {
+    closePalette();
+    if (cmd === 'restart') {
+      disable();
+      hideThink();
+      ml.innerHTML = '';
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'empty';
+      emptyEl.id = 'empty-state';
+      emptyEl.innerHTML = '<div class="empty-title">Cursor Chat</div><div class="empty-sub">Restarting...</div>';
+      ml.appendChild(emptyEl);
+      curId = null; sent = false; conversationStarted = false;
+      try {
+        await fetch(`${basePath}/api/restart`, { method: 'POST', credentials: 'same-origin' });
+      } catch (_) {}
+      setTimeout(() => {
+        const es = document.getElementById('empty-state');
+        if (es) es.querySelector('.empty-sub').textContent = 'Send a message to start a conversation';
+      }, 2000);
+    }
+  }
+
+  cmdInput.addEventListener('input', () => filterCmds(cmdInput.value));
+  cmdInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closePalette(); return; }
+    if (e.key === 'Enter') {
+      const sel = cmdList.querySelector('.cmd-item.selected');
+      if (sel) execCmd(sel.dataset.cmd);
+    }
+  });
+  cmdOverlay.addEventListener('click', (e) => {
+    if (e.target === cmdOverlay) closePalette();
+  });
+  cmdList.addEventListener('click', (e) => {
+    const item = e.target.closest('.cmd-item');
+    if (item) execCmd(item.dataset.cmd);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (cmdOverlay.classList.contains('open')) closePalette();
+      else openPalette();
+    }
+  });
 
   loadHistory().then(() => {
     setInterval(poll, 1500);

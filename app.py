@@ -222,6 +222,20 @@ async def kickstart_handler(request):
     return web.json_response({"ok": True})
 
 
+async def restart_handler(request):
+    """Restart the agent session and clear chat history."""
+    save_history([])
+    for f_name in ["exchange.json", "reply.json"]:
+        try:
+            os.remove(os.path.join(MCP_QUESTION_DIR, f_name))
+        except FileNotFoundError:
+            pass
+    subprocess.run(["tmux", "kill-session", "-t", "agent"], capture_output=True, timeout=5)
+    global _last_saved_exchange_id
+    _last_saved_exchange_id = None
+    return web.json_response({"ok": True})
+
+
 app = web.Application(middlewares=[auth_middleware])
 app.router.add_get(f"{BASE_PATH}", index_handler)
 app.router.add_get(f"{BASE_PATH}/", index_handler)
@@ -231,6 +245,7 @@ app.router.add_post(f"{BASE_PATH}/api/reply", reply_handler)
 app.router.add_post(f"{BASE_PATH}/api/kickstart", kickstart_handler)
 app.router.add_get(f"{BASE_PATH}/api/history", history_handler)
 app.router.add_post(f"{BASE_PATH}/api/history/clear", clear_history_handler)
+app.router.add_post(f"{BASE_PATH}/api/restart", restart_handler)
 app.router.add_static(f"{BASE_PATH}/static", STATIC_DIR)
 
 if __name__ == "__main__":
