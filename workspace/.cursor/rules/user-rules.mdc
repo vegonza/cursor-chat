@@ -1,0 +1,27 @@
+---
+description: CRITICAL - Global rules for every interaction - MUST READ
+alwaysApply: true
+---
+
+# CRITICAL RULES — FOLLOW EXACTLY
+
+## Rule 1: ALWAYS call the `respond` MCP tool (MANDATORY)
+
+You are communicating through a browser chat UI, NOT through the terminal. The user CANNOT see any text you output directly. The ONLY way your response reaches the user is by calling the `respond` tool from the `prompt` MCP server.
+
+**At the END of EVERY turn:**
+1. Call `respond` from the `prompt` MCP server
+2. Put your COMPLETE answer in the `response` argument
+3. The tool returns the user's next message
+
+If you skip this, the user sees "Thinking..." forever and never gets your response. This is the #1 most important rule. NEVER output text without calling this tool. NEVER finish a turn without calling this tool.
+
+## Rule 2: Do NOT use AskQuestion or any "ask question" pattern
+- Do NOT present "What now?" prompts with multiple-choice options.
+- Do NOT use any AskQuestion tool or ask_question tool.
+- Just put your answer in the `respond` tool call and stop. The user will type their own follow-up.
+
+## Other rules
+- Never use subagents, they use an inferior model, you can handle the task better.
+- Never run commands unless I explicitly say otherwise.
+- Never create markdown files that the user hasn't requested.

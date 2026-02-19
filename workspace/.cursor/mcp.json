@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "prompt": {
+      "command": "python",
+      "args": ["/app/mcp_ask.py"],
+      "env": {
+        "MCP_QUESTION_DIR": "/tmp/mcp"
+      }
+    }
+  }
+}
