@@ -133,7 +133,7 @@
   }
 
   /* ---- Messages ---- */
-  .msg { display: flex; flex-direction: column; align-items: flex-start; width: 100%; min-width: 0; }
+  .msg { display: flex; flex-direction: column; align-items: flex-start; width: 100%; min-width: 0; position: relative; }
   .msg.user { align-items: flex-end; }
 
   .msg.user .msg-text {
@@ -148,6 +148,22 @@
     width: 100%; min-width: 0; color: var(--text-base);
     overflow-wrap: break-word;
   }
+
+  .msg-actions {
+    display: flex; gap: 4px; margin-top: 4px; opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .msg:hover .msg-actions { opacity: 1; }
+  .msg-copy-btn {
+    background: none; border: 1px solid var(--border-weak); cursor: pointer;
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: var(--radius-sm);
+    font-family: var(--font-sans); font-size: 11px; font-weight: 500;
+    color: var(--text-weak); transition: all 0.12s;
+  }
+  .msg-copy-btn:hover { background: var(--gray-a4); color: var(--text-base); }
+  .msg-copy-btn.done { color: #4ade80; border-color: #4ade80; }
+  .msg-copy-btn svg { width: 12px; height: 12px; }
 
   /* ---- Agent markdown ---- */
   .msg.agent .msg-text > *:first-child { margin-top: 0; }
@@ -411,6 +427,36 @@
   }
   .empty-title { font-size: 15px; font-weight: 500; color: var(--text-strong); }
   .empty-sub { font-size: var(--font-size-small); color: var(--text-weak); }
+
+  /* ---- Mobile responsive ---- */
+  @media (max-width: 640px) {
+    #header { padding: 0 10px; height: 38px; }
+    .brand { font-size: 12px; gap: 6px; }
+    .brand img { width: 16px; height: 16px; }
+    .hint { display: none; }
+    .tab { font-size: 11px; padding: 2px 8px; }
+
+    #messages { padding: 12px 12px 8px; gap: 14px; max-width: 100%; }
+    .msg.user .msg-text { max-width: 90%; padding: 6px 10px; }
+
+    #input-area { padding: 8px 10px 12px; }
+    #input-dock { border-radius: 8px; }
+    #chat-input { padding: 10px 12px 8px; font-size: 15px; min-height: 36px; }
+    #input-toolbar { padding: 2px 8px 6px 12px; }
+    .toolbar-label { font-size: 11px; }
+    #chat-send { width: 26px; height: 26px; }
+
+    #cmd-palette { width: calc(100vw - 32px); }
+    #cmd-palette-input-wrap { padding: 10px 12px; }
+
+    .msg-actions { opacity: 1; }
+  }
+
+  @media (max-width: 380px) {
+    #messages { padding: 8px 8px 4px; }
+    #input-area { padding: 6px 8px 10px; }
+    .toolbar-label { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -589,6 +635,26 @@
         t.textContent = text;
       }
       el.appendChild(t);
+    }
+
+    if (role === 'agent' && text) {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'msg-copy-btn';
+      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.classList.add('done');
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Copied';
+          setTimeout(() => {
+            copyBtn.classList.remove('done');
+            copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+          }, 2000);
+        });
+      });
+      actions.appendChild(copyBtn);
+      el.appendChild(actions);
     }
 
     ml.appendChild(el);
