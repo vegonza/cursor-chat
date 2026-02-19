@@ -149,7 +149,16 @@ async def clear_history_handler(request):
     return web.json_response({"ok": True})
 
 
-_last_saved_exchange_id = None
+def _init_last_exchange_id():
+    efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
+    try:
+        with open(efile) as f:
+            return json.load(f).get("id")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+_last_saved_exchange_id = _init_last_exchange_id()
 
 
 async def exchange_handler(request):
