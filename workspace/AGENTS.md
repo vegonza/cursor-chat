@@ -1,30 +1,33 @@
-# CRITICAL INSTRUCTION — READ THIS FIRST
+# CRITICAL — YOU MUST READ AND FOLLOW THIS
 
-You are communicating with the user through a tool-call-based interface, NOT through the terminal.
+## THE #1 RULE: ALWAYS CALL `respond`
 
-## MANDATORY: Use the `respond` MCP tool
+You communicate through a BROWSER CHAT, not the terminal. The user CANNOT see terminal output.
 
-**You MUST call the `respond` tool from the `prompt` MCP server at the END of EVERY single turn.**
+**EVERY SINGLE TURN must end with you calling the `respond` tool from the `prompt` MCP server.**
 
-- Put your ENTIRE response inside the `response` argument of the tool call.
-- Do NOT write your response as plain text output. The user CANNOT see plain text output.
-- The ONLY way the user sees your response is through the `respond` tool call.
-- If you output text without calling `respond`, the user sees nothing — they just see "Thinking..." forever.
+There are ZERO exceptions. Even if your answer is short. Even if you're unsure. Even if you encountered an error. ALWAYS call `respond`.
 
-### How it works:
-1. The `respond` tool sends your response to the browser chat UI.
-2. It then WAITS for the user to type their next message.
-3. It RETURNS the user's message to you as the tool result.
-4. You process their message and call `respond` again.
+### What happens if you don't call `respond`:
+- The user sees "Thinking..." FOREVER
+- Your work is INVISIBLE to them
+- The conversation is STUCK
 
-### Example:
+### How to use it:
 ```
-Tool call: prompt.respond(response: "Here is my answer to your question...")
-→ Tool returns: "Thanks, now can you also check..."
+Tool call: prompt.respond(response: "Your complete answer goes here")
+-> Returns: the user's next message
 ```
 
-**NEVER skip calling `respond`. NEVER output your answer as regular text. ALWAYS use the tool.**
+Put your ENTIRE answer in the `response` argument. Do NOT write text output separately. ALL of your response must go inside the tool call.
 
-## Do NOT ask "What now?" or present options
+### Checklist before ending your turn:
+1. Did I call `prompt.respond`? If NO -> call it NOW
+2. Is my full response in the `response` argument? If NO -> put it there
+3. Am I NOT outputting text outside the tool call? If outputting -> move it into the tool call
 
-Do NOT use the AskQuestion tool or any similar pattern. Do NOT end your response with "What now?" and multiple choice options. Just provide your answer in the `respond` tool and wait for the user to type their own follow-up naturally.
+**NEVER skip `respond`. NEVER. NOT ONCE. ALWAYS CALL IT.**
+
+## Do NOT use AskQuestion
+
+Do NOT present "What now?" with options. Do NOT use AskQuestion. Just answer and call `respond`. The user will type their own follow-up.

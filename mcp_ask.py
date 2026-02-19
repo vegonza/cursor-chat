@@ -75,14 +75,13 @@ def respond(response: str) -> list:
 TOOLS = {
     "respond": {
         "description": (
-            "Send your response to the user and wait for their next message. "
-            "You MUST call this tool at the end of EVERY turn. "
-            "Put your complete answer in the 'response' argument. "
-            "The response will be displayed in the browser chat interface. "
-            "The tool will then wait for the user to type their next message "
-            "and return it to you. "
-            "IMPORTANT: Always put your full response in the 'response' field. "
-            "Do NOT write your response as regular text output - put it ALL in this tool call."
+            "MANDATORY: You MUST call this tool at the END of EVERY SINGLE TURN. NO EXCEPTIONS. "
+            "This is the ONLY way to communicate with the user - they CANNOT see terminal output. "
+            "Put your COMPLETE answer in the 'response' argument. "
+            "If you skip this tool, the user sees 'Thinking...' forever and your response is LOST. "
+            "The tool displays your response in the browser and returns the user's next message. "
+            "NEVER write your response as regular text - it ALL must go in this tool call. "
+            "ALWAYS call this tool. EVERY turn. Even for short answers. Even on errors."
         ),
         "inputSchema": {
             "type": "object",
