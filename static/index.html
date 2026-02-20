@@ -577,13 +577,24 @@
   const terminalView = document.getElementById('terminal-view');
   let termInit = false;
 
+  function setMode(mode) {
+    fetch(`${basePath}/api/mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+      credentials: 'same-origin',
+    }).catch(() => {});
+  }
+
   function toChat() {
     tabChat.classList.add('active'); tabTerminal.classList.remove('active');
     chatView.classList.remove('hidden'); terminalView.classList.remove('visible');
+    setMode('chat');
   }
   function toTerm() {
     tabTerminal.classList.add('active'); tabChat.classList.remove('active');
     chatView.classList.add('hidden'); terminalView.classList.add('visible');
+    setMode('terminal');
     if (!termInit) { initTerminal(); termInit = true; }
     else if (fitAddon) fitAddon.fit();
   }
@@ -615,14 +626,19 @@
     }
   });
 
-  // Chat
+  // Chat state machine:
+  //   'idle'    - no conversation yet, waiting for first message
+  //   'waiting' - agent is processing, user can type but not send
+  //   'ready'   - exchange available, user can send a reply
   const mc = document.getElementById('messages-container');
   const ml = document.getElementById('messages');
   const chatInput = document.getElementById('chat-input');
   const chatSend = document.getElementById('chat-send');
   const dock = document.getElementById('input-dock');
   const empty = document.getElementById('empty-state');
-  let curId = null, sent = false;
+
+  let chatState = 'idle';
+  let curId = null;
 
   function scroll() { mc.scrollTop = mc.scrollHeight; }
 
@@ -691,12 +707,14 @@
   }
   function hideThink() { if (thinkEl) { thinkEl.remove(); thinkEl = null; } }
 
-  function enable() {
+  function setReady() {
+    chatState = 'ready';
     chatSend.disabled = false;
     dock.classList.remove('waiting');
     chatInput.focus();
   }
-  function disable() {
+  function setWaiting() {
+    chatState = 'waiting';
     chatSend.disabled = true;
     dock.classList.add('waiting');
   }
@@ -705,12 +723,12 @@
     const text = chatInput.value.trim();
     if (!text && attachedImages.length === 0) return;
 
-    if (!conversationStarted && !curId) {
+    if (chatState === 'idle') {
       if (!text) return;
-      conversationStarted = true;
+      chatState = 'waiting';
       addMsg(text, 'user');
       chatInput.value = ''; chatInput.style.height = 'auto';
-      disable(); showThink();
+      setWaiting(); showThink();
       try {
         await fetch(`${basePath}/api/kickstart`, {
           method: 'POST',
@@ -722,24 +740,23 @@
       return;
     }
 
-    if (!curId || sent) return;
-    sent = true;
+    if (chatState !== 'ready' || !curId) return;
+
+    const replyId = curId;
+    setWaiting(); showThink();
     addMsg(text, 'user', attachedImages.map(i => i.dataUrl));
     const images = attachedImages.map(i => ({ data: i.data, mimeType: i.mimeType }));
     attachedImages.length = 0;
     renderPreviews();
     chatInput.value = ''; chatInput.style.height = 'auto';
-    disable(); showThink();
     try {
       await fetch(`${basePath}/api/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: curId, message: text, images }),
+        body: JSON.stringify({ id: replyId, message: text, images }),
         credentials: 'same-origin',
       });
     } catch (_) {}
-    curId = null;
-    sent = false;
   }
 
   // Image attachments
@@ -808,31 +825,26 @@
   async function poll() {
     try {
       const r = await fetch(`${basePath}/api/exchange?_=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
-      if (r.ok) {
-        const d = await r.json();
-        if (d && d.id && d.id !== curId && !sent) {
-          hideThink();
-          curId = d.id; sent = false;
-          if (d.response) addMsg(d.response, 'agent');
-          enable();
-        }
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && d.id && d.id !== curId) {
+        hideThink();
+        curId = d.id;
+        if (d.response) addMsg(d.response, 'agent');
+        setReady();
       }
     } catch (_) {}
   }
-
-  let conversationStarted = false;
 
   async function loadHistory() {
     try {
       const r = await fetch(`${basePath}/api/history?_=${Date.now()}`, {
         credentials: 'same-origin', cache: 'no-store',
       });
-      console.log('[history] fetch status:', r.status);
       if (r.ok) {
         const msgs = await r.json();
-        console.log('[history] messages:', msgs?.length || 0);
         if (msgs && msgs.length > 0) {
-          conversationStarted = true;
+          chatState = 'waiting';
           for (const m of msgs) {
             addMsg(m.text, m.role === 'agent' ? 'agent' : 'user');
           }
@@ -843,11 +855,12 @@
       });
       if (ex.ok) {
         const d = await ex.json();
-        console.log('[history] exchange:', d?.id || 'none');
         if (d && d.id) {
           curId = d.id;
-          sent = false;
-          enable();
+          setReady();
+        } else if (chatState !== 'idle') {
+          setWaiting();
+          showThink();
         }
       }
     } catch (e) { console.error('[history] error:', e); }
@@ -892,7 +905,7 @@
       emptyEl.id = 'empty-state';
       emptyEl.innerHTML = '<div class="empty-title">Cursor Chat</div><div class="empty-sub">Restarting...</div>';
       ml.appendChild(emptyEl);
-      curId = null; sent = false; conversationStarted = false;
+      curId = null; chatState = 'idle';
       try {
         await fetch(`${basePath}/api/restart`, { method: 'POST', credentials: 'same-origin' });
       } catch (_) {}

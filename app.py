@@ -7,6 +7,7 @@ import pty
 import signal
 import struct
 import subprocess
+import tempfile
 import termios
 
 from aiohttp import web
@@ -17,6 +18,32 @@ BASE_PATH = os.environ.get("BASE_PATH", "/terminal").rstrip("/")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 MCP_QUESTION_DIR = os.environ.get("MCP_QUESTION_DIR", "/tmp/mcp")
 HISTORY_FILE = os.environ.get("HISTORY_FILE", "/workspace/.chat-history.json")
+
+
+def atomic_write_json(filepath, data):
+    """Write JSON atomically: write to temp file then rename."""
+    dir_name = os.path.dirname(filepath)
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, filepath)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def safe_read_json(filepath):
+    """Read JSON file safely, handling partial writes or missing files."""
+    try:
+        with open(filepath) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
 
 
 def check_basic_auth(request):
@@ -127,8 +154,7 @@ def load_history():
 
 
 def save_history(messages):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(messages, f)
+    atomic_write_json(HISTORY_FILE, messages)
 
 
 def append_message(role, text, images=None):
@@ -151,14 +177,13 @@ async def clear_history_handler(request):
 
 def _init_last_exchange_id():
     efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
-    try:
-        with open(efile) as f:
-            return json.load(f).get("id")
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+    data = safe_read_json(efile)
+    return data.get("id") if data else None
 
 
 _last_saved_exchange_id = _init_last_exchange_id()
+_agent_processing = False
+_user_mode = "chat"
 
 
 async def exchange_handler(request):
@@ -166,16 +191,25 @@ async def exchange_handler(request):
     global _last_saved_exchange_id, _agent_processing
     efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
-    if os.path.exists(efile) and not os.path.exists(rfile):
-        _agent_processing = False
-        with open(efile) as f:
-            data = json.load(f)
-        if data.get("id") != _last_saved_exchange_id:
-            _last_saved_exchange_id = data["id"]
-            if data.get("response"):
-                append_message("agent", data["response"])
-        return web.json_response(data)
-    return web.json_response(None)
+
+    if not os.path.exists(efile):
+        return web.json_response(None)
+
+    if os.path.exists(rfile):
+        return web.json_response(None)
+
+    data = safe_read_json(efile)
+    if not data or not data.get("id"):
+        return web.json_response(None)
+
+    _agent_processing = False
+
+    if data["id"] != _last_saved_exchange_id:
+        _last_saved_exchange_id = data["id"]
+        if data.get("response"):
+            append_message("agent", data["response"])
+
+    return web.json_response(data)
 
 
 async def reply_handler(request):
@@ -186,12 +220,21 @@ async def reply_handler(request):
     msg = data.get("message", "")
     images = data.get("images")
     if msg or images:
-        append_message("user", msg, images=[{"mimeType": i["mimeType"]} for i in images] if images else None)
+        append_message(
+            "user", msg,
+            images=[{"mimeType": i["mimeType"]} for i in images] if images else None,
+        )
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
-    with open(rfile, "w") as f:
-        json.dump(data, f)
+    atomic_write_json(rfile, data)
     _agent_processing = True
     return web.json_response({"ok": True})
+
+
+SYSTEM_SUFFIX = (
+    "\n\n[SYSTEM: You MUST call the `send_message` tool from the `chat` MCP server "
+    "to reply. Put your ENTIRE answer in the `message` argument. The user cannot see "
+    "terminal output. If you don't call `send_message`, the user sees nothing.]"
+)
 
 
 async def kickstart_handler(request):
@@ -221,8 +264,8 @@ async def kickstart_handler(request):
 
     global _agent_processing
     append_message("user", message)
-    clean_msg = message.replace("\n", " ")
-    tmux_send_text(clean_msg)
+    injected = message.replace("\n", " ") + SYSTEM_SUFFIX.replace("\n", " ")
+    tmux_send_text(injected)
     await asyncio.sleep(0.5)
 
     tmux_send_key("Escape")
@@ -235,6 +278,7 @@ async def kickstart_handler(request):
 
 async def restart_handler(request):
     """Restart the agent session and clear chat history."""
+    global _last_saved_exchange_id, _agent_processing
     save_history([])
     for f_name in ["exchange.json", "reply.json"]:
         try:
@@ -242,12 +286,17 @@ async def restart_handler(request):
         except FileNotFoundError:
             pass
     subprocess.run(["tmux", "kill-session", "-t", "agent"], capture_output=True, timeout=5)
-    global _last_saved_exchange_id
     _last_saved_exchange_id = None
+    _agent_processing = False
     return web.json_response({"ok": True})
 
 
-_agent_processing = False
+async def mode_handler(request):
+    """User switches between chat and terminal mode."""
+    global _user_mode
+    data = await request.json()
+    _user_mode = data.get("mode", "chat")
+    return web.json_response({"ok": True, "mode": _user_mode})
 
 
 def _tmux_tab():
@@ -259,11 +308,12 @@ def _tmux_tab():
 
 
 async def tab_presser_loop(app):
-    """Background task: press Tab when agent is processing (needs tool approvals)."""
+    """Background task: press Tab when agent is processing (needs tool approvals).
+    Only runs in chat mode - in terminal mode the user controls everything directly."""
     efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
     while True:
         await asyncio.sleep(2)
-        if _agent_processing and not os.path.exists(efile):
+        if _agent_processing and _user_mode == "chat" and not os.path.exists(efile):
             try:
                 _tmux_tab()
             except Exception:
@@ -294,6 +344,7 @@ app.router.add_post(f"{BASE_PATH}/api/kickstart", kickstart_handler)
 app.router.add_get(f"{BASE_PATH}/api/history", history_handler)
 app.router.add_post(f"{BASE_PATH}/api/history/clear", clear_history_handler)
 app.router.add_post(f"{BASE_PATH}/api/restart", restart_handler)
+app.router.add_post(f"{BASE_PATH}/api/mode", mode_handler)
 app.router.add_static(f"{BASE_PATH}/static", STATIC_DIR)
 
 if __name__ == "__main__":

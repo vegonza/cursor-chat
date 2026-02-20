@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "prompt": {
+    "chat": {
       "command": "python",
       "args": ["/app/mcp_ask.py"],
       "env": {
