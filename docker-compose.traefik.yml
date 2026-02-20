@@ -1,0 +1,34 @@
+services:
+  cursor-chat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cursor-chat
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - BASE_PATH=${BASE_PATH:-/}
+      - AGENT_BIN=/opt/cursor-agent/cursor-agent
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
+      - AGENT_MODEL=${AGENT_MODEL:-claude-4.6-opus-high}
+    volumes:
+      - ${CURSOR_AGENT_DIR:-/home/ubuntu/.local/share/cursor-agent/versions/latest}:/opt/cursor-agent:ro
+      - ${CLI_CONFIG:-/home/ubuntu/.cursor/cli-config.json}:/tmp/host-cli-config.json:ro
+      - chat-workspace:/workspace
+    networks:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.cursor-chat.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.cursor-chat.entrypoints=websecure
+      - traefik.http.routers.cursor-chat.tls=true
+      - traefik.http.routers.cursor-chat.tls.certresolver=letsencrypt
+      - traefik.http.services.cursor-chat.loadbalancer.server.port=7681
+
+volumes:
+  chat-workspace:
+
+networks:
+  traefik:
+    external: true
