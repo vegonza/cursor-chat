@@ -14,6 +14,205 @@ import termios
 from aiohttp import web
 
 
+# --------------- ANSI → Markdown reconstruction ---------------
+
+_ANSI_ESC = re.compile(r"\033\[([0-9;]*)m")
+
+_H1_RE = re.compile(r"\033\[1m\033\[38;5;123m")
+_H2_RE = re.compile(r"\033\[1m\033\[38;5;153m")
+_H3_RE = re.compile(r"\033\[1m\033\[38;5;195m")
+_INLINE_CODE_RE = re.compile(
+    r"\033\[38;5;224m\033\[48;5;59m(.*?)\033\[39m\033\[49m"
+)
+_BOLD_RE = re.compile(r"\033\[1m(.*?)\033\[0m")
+_ITALIC_RE = re.compile(r"\033\[3m(.*?)\033\[0m")
+
+
+def _strip_ansi(text):
+    return _ANSI_ESC.sub("", text)
+
+
+def _is_heading(line):
+    return _H1_RE.search(line) or _H2_RE.search(line) or _H3_RE.search(line)
+
+
+_SYNTAX_COLOR_RE = re.compile(r"\033\[38;5;(\d+)m")
+_HEADING_COLORS = {123, 153, 195}
+_INLINE_CODE_COLOR = 224
+
+
+def _is_code_line(line):
+    """A line is code if it has syntax-highlighting colors (not heading/inline-code)."""
+    if _is_heading(line):
+        return False
+    for m in _SYNTAX_COLOR_RE.finditer(line):
+        c = int(m.group(1))
+        if c not in _HEADING_COLORS and c != _INLINE_CODE_COLOR:
+            return True
+    return False
+
+
+# Colors used for syntax highlighting in code blocks (not headings/inline code)
+_SYNTAX_COLOR_RE = re.compile(r"\033\[38;5;(\d+)m")
+_NON_CODE_COLORS = {123, 153, 195, 224}
+
+
+def _is_code_line(line):
+    """Detect syntax-highlighted code lines (excluding headings and inline code)."""
+    if _is_heading(line):
+        return False
+    colors = [int(m.group(1)) for m in _SYNTAX_COLOR_RE.finditer(line)]
+    code_colors = [c for c in colors if c not in _NON_CODE_COLORS]
+    return len(code_colors) >= 1
+
+
+def _reconstruct_inline(line):
+    """Reconstruct inline markdown from ANSI-formatted text."""
+    def _code_repl(m):
+        inner = _strip_ansi(m.group(1)).strip()
+        return f"`{inner}`" if inner else ""
+
+    def _bold_repl(m):
+        inner = _strip_ansi(m.group(1)).strip()
+        return f"**{inner}**" if inner else ""
+
+    def _italic_repl(m):
+        inner = _strip_ansi(m.group(1)).strip()
+        return f"*{inner}*" if inner else ""
+
+    r = _INLINE_CODE_RE.sub(_code_repl, line)
+    r = _BOLD_RE.sub(_bold_repl, r)
+    r = _ITALIC_RE.sub(_italic_repl, r)
+    return _strip_ansi(r)
+
+
+def _flush_code(code_buf, out):
+    """Emit buffered code lines as a fenced block, stripping common indent."""
+    if not code_buf:
+        return
+    indents = []
+    for cl in code_buf:
+        stripped = cl.lstrip(" ")
+        if stripped:
+            indents.append(len(cl) - len(stripped))
+    common = min(indents) if indents else 0
+    out.append("```")
+    for cl in code_buf:
+        out.append(cl[common:])
+    out.append("```")
+
+
+def _ansi_to_markdown(colored_lines):
+    """Convert ANSI-colored TUI lines back to markdown.
+
+    Handles headings, blockquotes, HR, lists, bold/italic/code inline,
+    code blocks (syntax-highlighted runs), and tables (box-drawing).
+    Anything unrecognized passes through as stripped text — never drops content.
+    """
+    raw_result = []
+    in_code = False
+    code_buf = []
+
+    for raw in colored_lines:
+        line = raw.rstrip()
+        plain = _strip_ansi(line).strip()
+
+        # Empty line: flush code block if we were in one
+        if not plain:
+            if in_code:
+                _flush_code(code_buf, raw_result)
+                in_code = False
+                code_buf = []
+            raw_result.append("")
+            continue
+
+        # Code block: syntax-highlighted line
+        if _is_code_line(line):
+            if not in_code:
+                in_code = True
+                code_buf = []
+            code_buf.append(_strip_ansi(line).rstrip())
+            continue
+
+        # Leaving a code block
+        if in_code:
+            _flush_code(code_buf, raw_result)
+            in_code = False
+            code_buf = []
+
+        # Headings
+        if _H1_RE.search(line):
+            raw_result.append(f"# {plain}")
+            continue
+        if _H2_RE.search(line):
+            raw_result.append(f"## {plain}")
+            continue
+        if _H3_RE.search(line):
+            raw_result.append(f"### {plain}")
+            continue
+
+        # Horizontal rule (dim + line chars)
+        if "\033[2m" in line and "────" in plain:
+            raw_result.append("---")
+            continue
+
+        # Blockquote (italic + gray, but not list items)
+        if "\033[3m\033[90m" in line and "•" not in plain:
+            bq_text = plain.lstrip("> ").strip()
+            raw_result.append(f"> {bq_text}")
+            continue
+
+        # Table borders
+        if any(c in plain for c in ("┌", "└")) and "─" in plain:
+            continue
+        if "├" in plain and "┼" in plain:
+            cols = plain.count("┼") + 1
+            raw_result.append("| " + " | ".join(["---"] * cols) + " |")
+            continue
+        if "│" in plain and ("┌" not in plain and "└" not in plain):
+            cells = [c.strip() for c in plain.split("│") if c.strip()]
+            if cells:
+                raw_result.append("| " + " | ".join(cells) + " |")
+                continue
+
+        # Unordered list bullet
+        bullet_m = re.match(r"^(\s*)\033\[90m•\033\[39m\s*(.*)", line)
+        if bullet_m:
+            indent = len(bullet_m.group(1)) // 2
+            text = _strip_ansi(bullet_m.group(2)).strip()
+            raw_result.append("  " * indent + f"- {text}")
+            continue
+
+        # Ordered list number
+        ol_m = re.match(r"^(\s*)\033\[90m(\d+)\.\033\[39m\s*(.*)", line)
+        if ol_m:
+            indent = len(ol_m.group(1)) // 2
+            num = ol_m.group(2)
+            text = _strip_ansi(ol_m.group(3)).strip()
+            raw_result.append("  " * indent + f"{num}. {text}")
+            continue
+
+        # Default: reconstruct inline formatting
+        raw_result.append(_reconstruct_inline(line).strip())
+
+    if in_code:
+        _flush_code(code_buf, raw_result)
+
+    # Collapse consecutive blank lines to at most 1
+    result = []
+    blank_count = 0
+    for line in raw_result:
+        if not line.strip():
+            blank_count += 1
+            if blank_count <= 1:
+                result.append(line)
+        else:
+            blank_count = 0
+            result.append(line)
+
+    return "\n".join(result)
+
+
 TERMINAL_USER = os.environ.get("TERMINAL_USER", "admin")
 TERMINAL_PASSWORD = os.environ["TERMINAL_PASSWORD"]
 BASE_PATH = os.environ.get("BASE_PATH", "/terminal").rstrip("/")
@@ -286,10 +485,7 @@ async def kickstart_handler(request):
     append_message("user", message)
     injected = message.replace("\n", " ") + SYSTEM_SUFFIX.replace("\n", " ")
     tmux_send_text(injected)
-    await asyncio.sleep(0.5)
-
-    tmux_send_key("Escape")
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(1.0)
     tmux_send_key("Enter")
 
     _agent_processing = True
@@ -327,10 +523,10 @@ _SUFFIX_END_RE = re.compile(r"Call\s+it\s+NOW\s+when\s+done\.\]")
 
 
 def _capture_pane():
-    """Capture the visible tmux pane content as plain text (sync, for fallback)."""
+    """Capture pane with ANSI codes including scrollback (sync fallback)."""
     try:
         r = subprocess.run(
-            ["tmux", "capture-pane", "-t", "agent", "-p"],
+            ["tmux", "capture-pane", "-t", "agent", "-p", "-e", "-S", "-"],
             timeout=3, capture_output=True, text=True,
         )
         return r.stdout if r.returncode == 0 else ""
@@ -339,10 +535,10 @@ def _capture_pane():
 
 
 async def _capture_pane_async():
-    """Capture pane asynchronously without thread pool overhead."""
+    """Capture pane with ANSI codes including scrollback, asynchronously."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "tmux", "capture-pane", "-t", "agent", "-p",
+            "tmux", "capture-pane", "-t", "agent", "-p", "-e", "-S", "-",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -352,28 +548,26 @@ async def _capture_pane_async():
         return ""
 
 
-def _extract_response(pane_text):
-    """Extract the agent's current response from the TUI.
+def _extract_response(colored_pane):
+    """Extract the agent's response from ANSI-colored pane text.
 
-    Strategy: find the input box by locating └ then ┌. The response lives above ┌.
-
-    Top boundary:
-      Case 1 (first turn):  the SYSTEM_SUFFIX ending "Call it NOW when done.]"
-      Case 2 (later turns): ⬢ completed tool-call line.
+    Uses stripped text for boundary detection, then converts the colored
+    response lines back to markdown via ANSI pattern recognition.
     """
-    lines = pane_text.split("\n")
+    colored_lines = colored_pane.split("\n")
+    plain_lines = [_strip_ansi(l) for l in colored_lines]
 
-    # Find the last non-blank line (skip trailing empty rows from tall terminal)
-    last_content = len(lines) - 1
-    while last_content >= 0 and not lines[last_content].strip():
+    # Find the last non-blank line
+    last_content = len(plain_lines) - 1
+    while last_content >= 0 and not plain_lines[last_content].strip():
         last_content -= 1
     if last_content < 3:
         return ""
 
-    # Find └ (box bottom border) within 15 lines of the last content
+    # Find └ (box bottom border) within 15 lines of last content
     box_bottom = -1
     for i in range(last_content, max(last_content - 15, -1), -1):
-        if "└" in lines[i] and "─" in lines[i]:
+        if "└" in plain_lines[i] and "─" in plain_lines[i]:
             box_bottom = i
             break
     if box_bottom < 0:
@@ -381,42 +575,42 @@ def _extract_response(pane_text):
 
     box_top = -1
     for i in range(box_bottom - 1, max(box_bottom - 5, -1), -1):
-        if "┌" in lines[i] and "─" in lines[i]:
+        if "┌" in plain_lines[i] and "─" in plain_lines[i]:
             box_top = i
             break
     if box_top < 0:
         return ""
 
+    # Find top boundary using plain text
     response_start = 0
     for i in range(box_top - 1, -1, -1):
-        s = lines[i].strip()
-        # Only the next_prompt tool call is a turn delimiter
+        s = plain_lines[i].strip()
         if s.startswith("⬢") and "next_prompt" in s:
             response_start = i + 1
             break
-        # Skip other tool calls during boundary search
         if s.startswith("⬡") or s.startswith("⬢"):
             continue
         if "Cursor Agent" in s or (s.startswith("/") and "/" in s):
             for j in range(i + 1, box_top):
-                if _SUFFIX_END_RE.search(lines[j]):
+                if _SUFFIX_END_RE.search(plain_lines[j]):
                     response_start = j + 1
                     break
             else:
                 msg_started = False
                 for j in range(i + 1, box_top):
-                    if lines[j].strip():
+                    if plain_lines[j].strip():
                         msg_started = True
                     elif msg_started:
                         response_start = j
                         break
             break
 
-    result = []
-    for i in range(response_start, box_top):
-        result.append(lines[i])
+    # Extract the colored lines and convert to markdown
+    response_colored = colored_lines[response_start:box_top]
+    if not any(_strip_ansi(l).strip() for l in response_colored):
+        return ""
 
-    return "\n".join(result).strip()
+    return _ansi_to_markdown(response_colored)
 
 
 async def stream_sse_handler(request):
@@ -444,9 +638,11 @@ async def stream_sse_handler(request):
         else:
             idle_ticks += 1
         if not _agent_processing:
+            done_msg = {'done': True}
             if last_sent:
-                await resp.write(f"data: {json.dumps({'text': last_sent, 'done': True})}\n\n".encode())
-                await resp.drain()
+                done_msg['text'] = last_sent
+            await resp.write(f"data: {json.dumps(done_msg)}\n\n".encode())
+            await resp.drain()
             break
         if idle_ticks > 6000:
             break

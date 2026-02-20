@@ -864,10 +864,10 @@
       try {
         const d = JSON.parse(ev.data);
         if (d.text) renderStream(d.text);
-        if (d.done) closeSSE();
+        if (d.done) { closeSSE(); poll(); }
       } catch (_) {}
     };
-    streamSource.onerror = () => { closeSSE(); };
+    streamSource.onerror = () => { closeSSE(); setTimeout(poll, 500); };
   }
 
   async function poll() {
