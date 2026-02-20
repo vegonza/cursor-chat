@@ -327,13 +327,27 @@ _SUFFIX_END_RE = re.compile(r"Call\s+it\s+NOW\s+when\s+done\.\]")
 
 
 def _capture_pane():
-    """Capture the visible tmux pane content as plain text."""
+    """Capture the visible tmux pane content as plain text (sync, for fallback)."""
     try:
         r = subprocess.run(
             ["tmux", "capture-pane", "-t", "agent", "-p"],
             timeout=3, capture_output=True, text=True,
         )
         return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+async def _capture_pane_async():
+    """Capture pane asynchronously without thread pool overhead."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "capture-pane", "-t", "agent", "-p",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        return stdout.decode() if proc.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -349,8 +363,16 @@ def _extract_response(pane_text):
     """
     lines = pane_text.split("\n")
 
+    # Find the last non-blank line (skip trailing empty rows from tall terminal)
+    last_content = len(lines) - 1
+    while last_content >= 0 and not lines[last_content].strip():
+        last_content -= 1
+    if last_content < 3:
+        return ""
+
+    # Find └ (box bottom border) within 15 lines of the last content
     box_bottom = -1
-    for i in range(len(lines) - 1, max(len(lines) - 15, -1), -1):
+    for i in range(last_content, max(last_content - 15, -1), -1):
         if "└" in lines[i] and "─" in lines[i]:
             box_bottom = i
             break
@@ -368,11 +390,13 @@ def _extract_response(pane_text):
     response_start = 0
     for i in range(box_top - 1, -1, -1):
         s = lines[i].strip()
-        if s.startswith("⬡"):
-            continue
-        if s.startswith("⬢"):
+        # Only the next_prompt tool call is a turn delimiter
+        if s.startswith("⬢") and "next_prompt" in s:
             response_start = i + 1
             break
+        # Skip other tool calls during boundary search
+        if s.startswith("⬡") or s.startswith("⬢"):
+            continue
         if "Cursor Agent" in s or (s.startswith("/") and "/" in s):
             for j in range(i + 1, box_top):
                 if _SUFFIX_END_RE.search(lines[j]):
@@ -390,16 +414,13 @@ def _extract_response(pane_text):
 
     result = []
     for i in range(response_start, box_top):
-        s = lines[i].strip()
-        if s.startswith("⬡") or s.startswith("⬢"):
-            continue
         result.append(lines[i])
 
     return "\n".join(result).strip()
 
 
 async def stream_sse_handler(request):
-    """SSE endpoint: pushes text deltas as they appear, flushing each write."""
+    """SSE endpoint: pushes full text snapshots as the response grows."""
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -411,26 +432,25 @@ async def stream_sse_handler(request):
     await resp.write(b": connected\n\n")
     await resp.drain()
 
-    sent_len = 0
+    last_sent = ""
     idle_ticks = 0
     while True:
         current = _streaming_text
-        if len(current) > sent_len:
-            delta = current[sent_len:]
-            sent_len = len(current)
-            await resp.write(f"data: {json.dumps({'delta': delta, 'total': sent_len})}\n\n".encode())
+        if current and current != last_sent:
+            last_sent = current
+            await resp.write(f"data: {json.dumps({'text': current})}\n\n".encode())
             await resp.drain()
             idle_ticks = 0
         else:
             idle_ticks += 1
         if not _agent_processing:
-            if sent_len > 0:
-                await resp.write(f"data: {json.dumps({'done': True, 'total': sent_len})}\n\n".encode())
+            if last_sent:
+                await resp.write(f"data: {json.dumps({'text': last_sent, 'done': True})}\n\n".encode())
                 await resp.drain()
             break
-        if idle_ticks > 1200:
+        if idle_ticks > 6000:
             break
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)
 
     return resp
 
@@ -444,12 +464,12 @@ def _tmux_tab():
 
 
 async def stream_capture_loop(app):
-    """Background task: capture TUI text every 50ms while agent is processing."""
+    """Background task: capture TUI text every 15ms while agent is processing."""
     global _streaming_text
     while True:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.015)
         if _agent_processing and _user_mode == "chat":
-            pane = await asyncio.get_event_loop().run_in_executor(None, _capture_pane)
+            pane = await _capture_pane_async()
             if pane:
                 text = _extract_response(pane)
                 if text and text != _last_finalized_text:

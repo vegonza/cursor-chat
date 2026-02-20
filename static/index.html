@@ -670,19 +670,21 @@
       el.appendChild(t);
     }
 
-    if (role === 'agent' && text) {
+    if (text) {
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
       const copyBtn = document.createElement('button');
       copyBtn.className = 'msg-copy-btn';
-      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+      const copySvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      const checkSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      copyBtn.innerHTML = copySvg + (role === 'agent' ? 'Copy' : '');
       copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => {
           copyBtn.classList.add('done');
-          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Copied';
+          copyBtn.innerHTML = checkSvg + (role === 'agent' ? 'Copied' : '');
           setTimeout(() => {
             copyBtn.classList.remove('done');
-            copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+            copyBtn.innerHTML = copySvg + (role === 'agent' ? 'Copy' : '');
           }, 2000);
         });
       });
@@ -825,11 +827,11 @@
   });
 
   let streamEl = null;
-  let streamAccum = '';
   let streamSource = null;
+  let lastStreamText = '';
 
-  function renderStream() {
-    if (!streamAccum || chatState !== 'waiting') return;
+  function renderStream(text) {
+    if (!text || chatState !== 'waiting') return;
     hideThink();
     if (!streamEl) {
       if (empty && empty.parentNode) empty.remove();
@@ -840,13 +842,14 @@
       streamEl.appendChild(t);
       ml.appendChild(streamEl);
     }
-    streamEl.querySelector('.msg-text').innerHTML = marked.parse(streamAccum);
+    lastStreamText = text;
+    streamEl.querySelector('.msg-text').innerHTML = marked.parse(text);
     scroll();
   }
 
   function clearStream() {
     if (streamEl) { streamEl.remove(); streamEl = null; }
-    streamAccum = '';
+    lastStreamText = '';
   }
 
   function closeSSE() {
@@ -855,15 +858,12 @@
 
   function openSSE() {
     closeSSE();
-    streamAccum = '';
+    lastStreamText = '';
     streamSource = new EventSource(`${basePath}/api/stream`);
     streamSource.onmessage = (ev) => {
       try {
         const d = JSON.parse(ev.data);
-        if (d.delta) {
-          streamAccum += d.delta;
-          renderStream();
-        }
+        if (d.text) renderStream(d.text);
         if (d.done) closeSSE();
       } catch (_) {}
     };
@@ -879,7 +879,7 @@
         closeSSE();
         hideThink();
         curId = d.id;
-        const finalText = d.response || streamAccum;
+        const finalText = d.response || lastStreamText;
         if (finalText && streamEl) {
           streamEl.querySelector('.msg-text').innerHTML = marked.parse(finalText);
           const actions = document.createElement('div');
@@ -899,7 +899,7 @@
           });
           actions.appendChild(copyBtn);
           streamEl.appendChild(actions);
-          streamEl = null; streamAccum = '';
+          streamEl = null; lastStreamText = '';
         } else {
           clearStream();
           if (finalText) addMsg(finalText, 'agent');
@@ -979,7 +979,7 @@
       emptyEl.id = 'empty-state';
       emptyEl.innerHTML = '<div class="empty-title">Cursor Chat</div><div class="empty-sub">Restarting...</div>';
       ml.appendChild(emptyEl);
-      curId = null; chatState = 'idle'; closeSSE(); streamAccum = '';
+      curId = null; chatState = 'idle'; closeSSE(); lastStreamText = '';
       try {
         await fetch(`${basePath}/api/restart`, { method: 'POST', credentials: 'same-origin' });
       } catch (_) {}

@@ -55,7 +55,7 @@ AGENT_CMD="$AGENT_BIN $AGENT_ARGS"
 start_agent_session() {
     if ! tmux has-session -t agent 2>/dev/null; then
         echo "[entrypoint] Starting tmux session 'agent'..."
-        tmux new-session -d -s agent -x 200 -y 500 -c "$WORKSPACE" "$AGENT_CMD"
+        tmux new-session -d -s agent -x 200 -y 2000 -c "$WORKSPACE" "$AGENT_CMD"
         tmux set-option -t agent window-size largest 2>/dev/null || true
     fi
 }
