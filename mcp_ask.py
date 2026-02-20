@@ -1,8 +1,7 @@
 """
-MCP server providing a `send_message` tool for agent-user communication.
-The agent puts its response in the tool call argument.
-The response is shown to the user in the browser chat UI.
-The tool then waits for the user's next message and returns it.
+MCP server providing a `next_prompt` tool for agent-user communication.
+The agent calls this when done responding. The tool waits for the user's
+next message and returns it. The response text is captured from the TUI.
 """
 
 import json
@@ -14,7 +13,6 @@ import uuid
 
 QUESTION_DIR = os.environ.get("MCP_QUESTION_DIR", "/tmp/mcp")
 POLL_INTERVAL = 0.5
-TIMEOUT = 600
 
 EXCHANGE_FILE = os.path.join(QUESTION_DIR, "exchange.json")
 REPLY_FILE = os.path.join(QUESTION_DIR, "reply.json")
@@ -25,7 +23,6 @@ def ensure_dir():
 
 
 def atomic_write_json(filepath, data):
-    """Write JSON atomically: write to temp file then rename."""
     dir_name = os.path.dirname(filepath)
     fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
@@ -41,7 +38,6 @@ def atomic_write_json(filepath, data):
 
 
 def safe_read_json(filepath):
-    """Read JSON file safely, handling partial writes."""
     try:
         with open(filepath) as f:
             return json.load(f)
@@ -49,8 +45,8 @@ def safe_read_json(filepath):
         return None
 
 
-def respond(response: str) -> list:
-    """Returns a list of MCP content blocks (text + optional images)."""
+def next_prompt() -> list:
+    """Signal done and wait for the user's next message."""
     ensure_dir()
 
     xid = str(uuid.uuid4())[:8]
@@ -61,10 +57,9 @@ def respond(response: str) -> list:
         except FileNotFoundError:
             pass
 
-    atomic_write_json(EXCHANGE_FILE, {"id": xid, "response": response})
+    atomic_write_json(EXCHANGE_FILE, {"id": xid})
 
-    start = time.time()
-    while time.time() - start < TIMEOUT:
+    while True:
         data = safe_read_json(REPLY_FILE)
         if data and data.get("id") == xid:
             for fp in [EXCHANGE_FILE, REPLY_FILE]:
@@ -88,35 +83,19 @@ def respond(response: str) -> list:
             return content if content else [{"type": "text", "text": ""}]
         time.sleep(POLL_INTERVAL)
 
-    try:
-        os.remove(EXCHANGE_FILE)
-    except FileNotFoundError:
-        pass
-    return [{"type": "text", "text": "[No response - timed out after 10 minutes]"}]
-
-
-TOOL_DESC = (
-    "MANDATORY: You MUST call this tool at the END of EVERY SINGLE TURN. NO EXCEPTIONS. "
-    "This is the ONLY way to communicate with the user - they CANNOT see terminal output. "
-    "Put your COMPLETE answer in the 'message' argument. "
-    "If you skip this tool, the user sees 'Thinking...' forever and your response is LOST. "
-    "The tool displays your message in the browser and returns the user's next message. "
-    "NEVER write your response as regular text - it ALL must go in this tool call. "
-    "ALWAYS call this tool. EVERY turn. Even for short answers. Even on errors."
-)
 
 TOOLS = {
-    "send_message": {
-        "description": TOOL_DESC,
+    "next_prompt": {
+        "description": (
+            "MANDATORY: Call this at the END of EVERY TURN. NO EXCEPTIONS. "
+            "This signals you are done and waits for the user's next message. "
+            "The user sees your response via the terminal UI - you don't need to repeat it. "
+            "Just call this tool when you're finished. It returns the user's next message. "
+            "ALWAYS call this. EVERY turn. Even for short answers. Even on errors."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "Your complete response to the user. Supports markdown formatting.",
-                },
-            },
-            "required": ["message"],
+            "properties": {},
         },
     },
 }
@@ -154,10 +133,9 @@ def handle_jsonrpc(request):
 
     if method == "tools/call":
         tool_name = request["params"]["name"]
-        arguments = request["params"].get("arguments", {})
 
-        if tool_name == "send_message":
-            content = respond(response=arguments.get("message", ""))
+        if tool_name == "next_prompt":
+            content = next_prompt()
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,

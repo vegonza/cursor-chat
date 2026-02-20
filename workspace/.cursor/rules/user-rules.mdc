@@ -3,25 +3,20 @@ description: CRITICAL - Global rules for every interaction - MUST READ
 alwaysApply: true
 ---
 
-# CRITICAL RULES — FOLLOW EXACTLY
+# MANDATORY RULES
 
-## Rule 1: ALWAYS call the `send_message` MCP tool (MANDATORY)
+## Rule 1: ALWAYS call `next_prompt` after EVERY response
 
-You are communicating through a browser chat UI, NOT through the terminal. The user CANNOT see any text you output directly. The ONLY way your response reaches the user is by calling the `send_message` tool from the `chat` MCP server.
+At the END of EVERY turn, you MUST call `next_prompt` from the `chat` MCP server (no arguments).
+This is how the user receives your response and sends their next message.
+If you skip it, the conversation is permanently stuck. There are ZERO exceptions.
 
-**At the END of EVERY turn:**
-1. Call `send_message` from the `chat` MCP server
-2. Put your COMPLETE answer in the `message` argument
-3. The tool returns the user's next message
+## Rule 2: NEVER use AskQuestion
 
-If you skip this, the user sees "Thinking..." forever and never gets your response. This is the #1 most important rule. NEVER output text without calling this tool. NEVER finish a turn without calling this tool.
+Do NOT present "What now?" prompts. Do NOT use AskQuestion. Do NOT present options.
+Just answer the user's question and call `chat.next_prompt()`.
 
-## Rule 2: Do NOT use AskQuestion or any "ask question" pattern
-- Do NOT present "What now?" prompts with multiple-choice options.
-- Do NOT use any AskQuestion tool or ask_question tool.
-- Just call `chat.send_message` and stop. The user will type their own follow-up.
-
-## Other rules
-- Never use subagents, they use an inferior model, you can handle the task better.
-- Never run commands unless I explicitly say otherwise.
+## Rule 3: Other rules
+- Never use subagents.
+- Never run commands unless the user explicitly says otherwise.
 - Never create markdown files that the user hasn't requested.

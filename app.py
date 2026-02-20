@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import signal
 import struct
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import termios
 
 from aiohttp import web
+
 
 TERMINAL_USER = os.environ.get("TERMINAL_USER", "admin")
 TERMINAL_PASSWORD = os.environ["TERMINAL_PASSWORD"]
@@ -187,8 +189,8 @@ _user_mode = "chat"
 
 
 async def exchange_handler(request):
-    """Returns the current exchange: agent's response waiting for user reply."""
-    global _last_saved_exchange_id, _agent_processing
+    """Returns the current exchange: agent is done, waiting for user reply."""
+    global _last_saved_exchange_id, _agent_processing, _streaming_text, _last_finalized_text
     efile = os.path.join(MCP_QUESTION_DIR, "exchange.json")
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
 
@@ -204,17 +206,30 @@ async def exchange_handler(request):
 
     _agent_processing = False
 
+    # Final capture attempt if streaming didn't catch anything
+    if not _streaming_text:
+        pane = _capture_pane()
+        if pane:
+            text = _extract_response(pane)
+            if text:
+                _streaming_text = text
+
     if data["id"] != _last_saved_exchange_id:
         _last_saved_exchange_id = data["id"]
-        if data.get("response"):
-            append_message("agent", data["response"])
+        if _streaming_text:
+            _last_finalized_text = _streaming_text
+            append_message("agent", _streaming_text)
+            data["response"] = _streaming_text
+
+    if "response" not in data and _streaming_text:
+        data["response"] = _streaming_text
 
     return web.json_response(data)
 
 
 async def reply_handler(request):
     """User sends their reply to the agent."""
-    global _agent_processing
+    global _agent_processing, _streaming_text
     data = await request.json()
     os.makedirs(MCP_QUESTION_DIR, exist_ok=True)
     msg = data.get("message", "")
@@ -224,16 +239,20 @@ async def reply_handler(request):
             "user", msg,
             images=[{"mimeType": i["mimeType"]} for i in images] if images else None,
         )
+    if msg:
+        data["message"] = msg + SYSTEM_SUFFIX
     rfile = os.path.join(MCP_QUESTION_DIR, "reply.json")
     atomic_write_json(rfile, data)
     _agent_processing = True
+    _streaming_text = ""
     return web.json_response({"ok": True})
 
 
 SYSTEM_SUFFIX = (
-    "\n\n[SYSTEM: You MUST call the `send_message` tool from the `chat` MCP server "
-    "to reply. Put your ENTIRE answer in the `message` argument. The user cannot see "
-    "terminal output. If you don't call `send_message`, the user sees nothing.]"
+    "\n\n[SYSTEM INSTRUCTION — MANDATORY: You MUST end your turn by calling the "
+    "`next_prompt` tool from the `chat` MCP server with no arguments. "
+    "Do NOT end your turn any other way. Do NOT use AskQuestion. "
+    "The user CANNOT reply until you call `next_prompt`. Call it NOW when done.]"
 )
 
 
@@ -262,7 +281,8 @@ async def kickstart_handler(request):
             capture_output=True,
         )
 
-    global _agent_processing
+    global _agent_processing, _streaming_text
+    _streaming_text = ""
     append_message("user", message)
     injected = message.replace("\n", " ") + SYSTEM_SUFFIX.replace("\n", " ")
     tmux_send_text(injected)
@@ -278,7 +298,7 @@ async def kickstart_handler(request):
 
 async def restart_handler(request):
     """Restart the agent session and clear chat history."""
-    global _last_saved_exchange_id, _agent_processing
+    global _last_saved_exchange_id, _agent_processing, _streaming_text, _last_finalized_text
     save_history([])
     for f_name in ["exchange.json", "reply.json"]:
         try:
@@ -288,6 +308,8 @@ async def restart_handler(request):
     subprocess.run(["tmux", "kill-session", "-t", "agent"], capture_output=True, timeout=5)
     _last_saved_exchange_id = None
     _agent_processing = False
+    _streaming_text = ""
+    _last_finalized_text = ""
     return web.json_response({"ok": True})
 
 
@@ -299,12 +321,139 @@ async def mode_handler(request):
     return web.json_response({"ok": True, "mode": _user_mode})
 
 
+_streaming_text = ""
+_last_finalized_text = ""
+_SUFFIX_END_RE = re.compile(r"Call\s+it\s+NOW\s+when\s+done\.\]")
+
+
+def _capture_pane():
+    """Capture the visible tmux pane content as plain text."""
+    try:
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-t", "agent", "-p"],
+            timeout=3, capture_output=True, text=True,
+        )
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _extract_response(pane_text):
+    """Extract the agent's current response from the TUI.
+
+    Strategy: find the input box by locating └ then ┌. The response lives above ┌.
+
+    Top boundary:
+      Case 1 (first turn):  the SYSTEM_SUFFIX ending "Call it NOW when done.]"
+      Case 2 (later turns): ⬢ completed tool-call line.
+    """
+    lines = pane_text.split("\n")
+
+    box_bottom = -1
+    for i in range(len(lines) - 1, max(len(lines) - 15, -1), -1):
+        if "└" in lines[i] and "─" in lines[i]:
+            box_bottom = i
+            break
+    if box_bottom < 0:
+        return ""
+
+    box_top = -1
+    for i in range(box_bottom - 1, max(box_bottom - 5, -1), -1):
+        if "┌" in lines[i] and "─" in lines[i]:
+            box_top = i
+            break
+    if box_top < 0:
+        return ""
+
+    response_start = 0
+    for i in range(box_top - 1, -1, -1):
+        s = lines[i].strip()
+        if s.startswith("⬡"):
+            continue
+        if s.startswith("⬢"):
+            response_start = i + 1
+            break
+        if "Cursor Agent" in s or (s.startswith("/") and "/" in s):
+            for j in range(i + 1, box_top):
+                if _SUFFIX_END_RE.search(lines[j]):
+                    response_start = j + 1
+                    break
+            else:
+                msg_started = False
+                for j in range(i + 1, box_top):
+                    if lines[j].strip():
+                        msg_started = True
+                    elif msg_started:
+                        response_start = j
+                        break
+            break
+
+    result = []
+    for i in range(response_start, box_top):
+        s = lines[i].strip()
+        if s.startswith("⬡") or s.startswith("⬢"):
+            continue
+        result.append(lines[i])
+
+    return "\n".join(result).strip()
+
+
+async def stream_sse_handler(request):
+    """SSE endpoint: pushes text deltas as they appear, flushing each write."""
+    resp = web.StreamResponse()
+    resp.content_type = "text/event-stream"
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Connection"] = "keep-alive"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.enable_chunked_encoding()
+    await resp.prepare(request)
+
+    await resp.write(b": connected\n\n")
+    await resp.drain()
+
+    sent_len = 0
+    idle_ticks = 0
+    while True:
+        current = _streaming_text
+        if len(current) > sent_len:
+            delta = current[sent_len:]
+            sent_len = len(current)
+            await resp.write(f"data: {json.dumps({'delta': delta, 'total': sent_len})}\n\n".encode())
+            await resp.drain()
+            idle_ticks = 0
+        else:
+            idle_ticks += 1
+        if not _agent_processing:
+            if sent_len > 0:
+                await resp.write(f"data: {json.dumps({'done': True, 'total': sent_len})}\n\n".encode())
+                await resp.drain()
+            break
+        if idle_ticks > 1200:
+            break
+        await asyncio.sleep(0.05)
+
+    return resp
+
+
 def _tmux_tab():
     subprocess.run(
         ["tmux", "send-keys", "-t", "agent", "Tab"],
         timeout=5,
         capture_output=True,
     )
+
+
+async def stream_capture_loop(app):
+    """Background task: capture TUI text every 50ms while agent is processing."""
+    global _streaming_text
+    while True:
+        await asyncio.sleep(0.05)
+        if _agent_processing and _user_mode == "chat":
+            pane = await asyncio.get_event_loop().run_in_executor(None, _capture_pane)
+            if pane:
+                text = _extract_response(pane)
+                if text and text != _last_finalized_text:
+                    _streaming_text = text
 
 
 async def tab_presser_loop(app):
@@ -322,14 +471,17 @@ async def tab_presser_loop(app):
 
 async def start_background_tasks(app):
     app["tab_presser"] = asyncio.create_task(tab_presser_loop(app))
+    app["stream_capture"] = asyncio.create_task(stream_capture_loop(app))
 
 
 async def cleanup_background_tasks(app):
-    app["tab_presser"].cancel()
-    try:
-        await app["tab_presser"]
-    except asyncio.CancelledError:
-        pass
+    for key in ("tab_presser", "stream_capture"):
+        if key in app:
+            app[key].cancel()
+            try:
+                await app[key]
+            except asyncio.CancelledError:
+                pass
 
 
 app = web.Application(middlewares=[auth_middleware])
@@ -345,6 +497,7 @@ app.router.add_get(f"{BASE_PATH}/api/history", history_handler)
 app.router.add_post(f"{BASE_PATH}/api/history/clear", clear_history_handler)
 app.router.add_post(f"{BASE_PATH}/api/restart", restart_handler)
 app.router.add_post(f"{BASE_PATH}/api/mode", mode_handler)
+app.router.add_get(f"{BASE_PATH}/api/stream", stream_sse_handler)
 app.router.add_static(f"{BASE_PATH}/static", STATIC_DIR)
 
 if __name__ == "__main__":

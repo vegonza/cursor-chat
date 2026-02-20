@@ -736,6 +736,7 @@
           body: JSON.stringify({ message: text }),
           credentials: 'same-origin',
         });
+        openSSE();
       } catch (_) {}
       return;
     }
@@ -743,8 +744,8 @@
     if (chatState !== 'ready' || !curId) return;
 
     const replyId = curId;
-    setWaiting(); showThink();
     addMsg(text, 'user', attachedImages.map(i => i.dataUrl));
+    setWaiting(); showThink();
     const images = attachedImages.map(i => ({ data: i.data, mimeType: i.mimeType }));
     attachedImages.length = 0;
     renderPreviews();
@@ -756,6 +757,7 @@
         body: JSON.stringify({ id: replyId, message: text, images }),
         credentials: 'same-origin',
       });
+      openSSE();
     } catch (_) {}
   }
 
@@ -822,15 +824,86 @@
     chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
   });
 
+  let streamEl = null;
+  let streamAccum = '';
+  let streamSource = null;
+
+  function renderStream() {
+    if (!streamAccum || chatState !== 'waiting') return;
+    hideThink();
+    if (!streamEl) {
+      if (empty && empty.parentNode) empty.remove();
+      streamEl = document.createElement('div');
+      streamEl.className = 'msg agent';
+      const t = document.createElement('div');
+      t.className = 'msg-text';
+      streamEl.appendChild(t);
+      ml.appendChild(streamEl);
+    }
+    streamEl.querySelector('.msg-text').innerHTML = marked.parse(streamAccum);
+    scroll();
+  }
+
+  function clearStream() {
+    if (streamEl) { streamEl.remove(); streamEl = null; }
+    streamAccum = '';
+  }
+
+  function closeSSE() {
+    if (streamSource) { streamSource.close(); streamSource = null; }
+  }
+
+  function openSSE() {
+    closeSSE();
+    streamAccum = '';
+    streamSource = new EventSource(`${basePath}/api/stream`);
+    streamSource.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.delta) {
+          streamAccum += d.delta;
+          renderStream();
+        }
+        if (d.done) closeSSE();
+      } catch (_) {}
+    };
+    streamSource.onerror = () => { closeSSE(); };
+  }
+
   async function poll() {
     try {
       const r = await fetch(`${basePath}/api/exchange?_=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
       if (!r.ok) return;
       const d = await r.json();
       if (d && d.id && d.id !== curId) {
+        closeSSE();
         hideThink();
         curId = d.id;
-        if (d.response) addMsg(d.response, 'agent');
+        const finalText = d.response || streamAccum;
+        if (finalText && streamEl) {
+          streamEl.querySelector('.msg-text').innerHTML = marked.parse(finalText);
+          const actions = document.createElement('div');
+          actions.className = 'msg-actions';
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'msg-copy-btn';
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+          copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(finalText).then(() => {
+              copyBtn.classList.add('done');
+              copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Copied';
+              setTimeout(() => {
+                copyBtn.classList.remove('done');
+                copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy';
+              }, 2000);
+            });
+          });
+          actions.appendChild(copyBtn);
+          streamEl.appendChild(actions);
+          streamEl = null; streamAccum = '';
+        } else {
+          clearStream();
+          if (finalText) addMsg(finalText, 'agent');
+        }
         setReady();
       }
     } catch (_) {}
@@ -861,6 +934,7 @@
         } else if (chatState !== 'idle') {
           setWaiting();
           showThink();
+          openSSE();
         }
       }
     } catch (e) { console.error('[history] error:', e); }
@@ -897,7 +971,7 @@
   async function execCmd(cmd) {
     closePalette();
     if (cmd === 'restart') {
-      disable();
+      clearStream();
       hideThink();
       ml.innerHTML = '';
       const emptyEl = document.createElement('div');
@@ -905,7 +979,7 @@
       emptyEl.id = 'empty-state';
       emptyEl.innerHTML = '<div class="empty-title">Cursor Chat</div><div class="empty-sub">Restarting...</div>';
       ml.appendChild(emptyEl);
-      curId = null; chatState = 'idle';
+      curId = null; chatState = 'idle'; closeSSE(); streamAccum = '';
       try {
         await fetch(`${basePath}/api/restart`, { method: 'POST', credentials: 'same-origin' });
       } catch (_) {}
