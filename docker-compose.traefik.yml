@@ -17,7 +17,7 @@ services:
       - ${CLI_CONFIG:-/home/ubuntu/.cursor/cli-config.json}:/tmp/host-cli-config.json:ro
       - chat-workspace:/workspace
     networks:
-      - traefik
+      - edge
     labels:
       - traefik.enable=true
       - traefik.http.routers.cursor-chat.rule=Host(`${DOMAIN}`)
@@ -30,5 +30,5 @@ volumes:
   chat-workspace:
 
 networks:
-  traefik:
+  edge:
     external: true
